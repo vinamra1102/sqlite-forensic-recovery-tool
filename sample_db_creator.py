@@ -1,36 +1,43 @@
 import sqlite3
 import os
+from datetime import datetime
 
+db_dir = "sample_dbs"
+db_path = os.path.join(db_dir, "messages1.db")
 
-os.makedirs("sample_dbs", exist_ok=True)
-
-
-db_path = "sample_dbs/messages.db"
 
 
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
-
-
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS messages (
+CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender TEXT NOT NULL,
+    sender TEXT,
     content TEXT,
     timestamp TEXT
-);
+)
 """)
 
 
-sample_data = [
-    ("Alice", "Hello Bob!", "2023-01-01 10:00:00"),
-    ("Bob", "Hi Alice!", "2023-01-01 10:05:00"),
-    ("Charlie", "What's up?", "2023-01-01 10:10:00")
-]
-
-cursor.executemany("INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)", sample_data)
-
+for i in range(200):
+    cursor.execute("INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)", (
+        f"User{i}", f"Message {i}", datetime.now().isoformat()
+    ))
 conn.commit()
-conn.close()
 
-print(f"[✅] Sample DB created at {db_path}")
+cursor.execute("DELETE FROM messages WHERE id BETWEEN 50 AND 150")
+conn.commit()
+
+
+for i in range(999, 1004):
+    cursor.execute("INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)", (
+        f"WALUser{i}", f"WAL Message {i}", datetime.now().isoformat()
+    ))
+
+print("\n✅ Sample SQLite DB created successfully:")
+print(" - 200 rows inserted")
+print(" - 101 rows deleted → Freelist pages created")
+print(" - 5 uncommitted rows → WAL file generated")
+print("📁 File saved to:", db_path)
+input("🚧 Keep this open if testing WAL... press ENTER to close connection and flush WAL.")
+conn.close()

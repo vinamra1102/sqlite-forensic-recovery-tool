@@ -12,10 +12,10 @@ try:
         print(row)
 
     
-    cursor.execute("DELETE FROM messages WHERE id = 3;")
+    cursor.execute("DELETE FROM messages WHERE id = 199;")
     conn.commit()
 
-    print("\n[🗑️] Deleted message with ID = 3.")
+    print("\n[🗑️] Deleted message with ID = 199.")
 
     
     print("\n[📄] Messages after delete:")

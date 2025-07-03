@@ -4,6 +4,8 @@ from modules.db_validator import is_valid_sqlite, get_sha256
 from modules.schema_parser import get_tables_and_columns
 from modules.live_reader import read_table_records
 from modules.freelist_parser import extract_freelist_pages
+from modules.Btree_parser import recover_deleted_rows
+
 
 def main():
     db_path = input("Enter path to SQLite DB file: ").strip()
@@ -42,7 +44,7 @@ def main():
         print("[❌] Invalid choice.")
         return
 
-    records = read_table_records(db_path, selected_table, limit=10)
+    records = read_table_records(db_path, selected_table, limit=50)
     if records:
         print(f"\n📄 Records from '{selected_table}':")
         for row in records:
@@ -58,6 +60,15 @@ def main():
             print(f"    Preview: {result['ascii_preview']}")
     else:
         print("[⚠️] No deleted record pages found.")
+
+    print("\n🔍 Attempting Structured Deleted Row Recovery...")
+    deleted_rows = recover_deleted_rows(db_path, selected_table)
+    if deleted_rows:
+        print(f"[✅] {len(deleted_rows)} deleted rows recovered:")
+        for row in deleted_rows:
+            print(row)
+    else:
+        print("[⚠️] No recoverable deleted rows found.")
 
 if __name__ == "__main__":
     main()
