@@ -18,11 +18,16 @@ def extract_freelist_pages(db_path):
         while current != 0 and current not in visited:
             visited.add(current)
             offset = current * page_size
-            if offset >= len(data): break
+            if offset + 8 > len(data):
+                break
 
             page = data[offset:offset + page_size]
             next_trunk = int.from_bytes(page[0:4], 'big')
             leaf_count = int.from_bytes(page[4:8], 'big')
+
+            # Safety: skip suspicious leaf counts
+            if leaf_count < 0 or leaf_count > 1000:
+                break
 
             ascii_preview = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in page[:200])
             results.append({

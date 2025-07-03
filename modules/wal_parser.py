@@ -1,5 +1,5 @@
 import os
-from modules.btree_parser import parse_leaf_page
+from modules.Btree_parser import parse_leaf_page
 
 def extract_wal_frames(wal_path, page_size=1024):
     with open(wal_path, "rb") as f:

@@ -1,138 +1,98 @@
 import sqlite3
 
 def parse_varint(data, offset):
-    value = 0
+    v = 0
     for i in range(9):
-        byte = data[offset + i]
-        value = (value << 7) | (byte & 0x7F)
-        if not (byte & 0x80):
-            return value, i + 1
-    return value, 9
+        b = data[offset + i]
+        v = (v << 7) | (b & 0x7F)
+        if not (b & 0x80):
+            return v, i + 1
+    return v, 9
 
 def parse_serial_types(header_bytes, count):
-    types = []
-    offset = 0
+    types, off = [], 0
     for _ in range(count):
-        serial_type, size = parse_varint(header_bytes, offset)
-        types.append(serial_type)
-        offset += size
+        t, n = parse_varint(header_bytes, off)
+        types.append(t); off += n
     return types
 
 def parse_record_values(data, types):
-    values = []
-    offset = 0
+    vals, off = [], 0
     for t in types:
         if t == 0:
-            values.append(None)
-        elif t == 1:
-            values.append(int.from_bytes(data[offset:offset+1], 'big'))
-            offset += 1
-        elif t == 2:
-            values.append(int.from_bytes(data[offset:offset+2], 'big'))
-            offset += 2
-        elif t == 3:
-            values.append(int.from_bytes(data[offset:offset+3], 'big'))
-            offset += 3
-        elif t == 4:
-            values.append(int.from_bytes(data[offset:offset+4], 'big'))
-            offset += 4
-        elif t == 5:
-            values.append(int.from_bytes(data[offset:offset+6], 'big'))
-            offset += 6
-        elif t == 6:
-            values.append(int.from_bytes(data[offset:offset+8], 'big'))
-            offset += 8
+            vals.append(None)
+        elif 1 <= t <= 6:
+            size = (1,2,3,4,6,8)[t-1]
+            vals.append(int.from_bytes(data[off:off+size],'big'))
+            off += size
         elif t == 8:
-            values.append(0)
+            vals.append(0)
         elif t == 9:
-            values.append(1)
-        elif t >= 13 and t % 2 == 1:
-            length = (t - 13) // 2
-            try:
-                values.append(data[offset:offset+length].decode('utf-8'))
-            except:
-                values.append(data[offset:offset+length])
-            offset += length
+            vals.append(1)
+        elif t >= 13 and t%2==1:
+            ln = (t-13)//2
+            chunk = data[off:off+ln]
+            try: vals.append(chunk.decode())
+            except: vals.append(chunk)
+            off += ln
         else:
-            values.append(f"<unhandled type {t}>")
-    return values
+            vals.append(f"<type {t}>")
+    return vals
 
-def parse_leaf_page(page_data, schema):
-    results = []
-    num_cells = int.from_bytes(page_data[3:5], 'big')
-    cell_ptrs = [int.from_bytes(page_data[8 + 2*i: 10 + 2*i], 'big') for i in range(num_cells)]
-    col_count = len(schema)
-
-    for ptr in cell_ptrs:
+def parse_leaf_page(page, schema):
+    rows = []
+    cell_count = int.from_bytes(page[3:5],'big')
+    ptrs = [int.from_bytes(page[8+2*i:10+2*i],'big') for i in range(cell_count)]
+    for p in ptrs:
         try:
-            payload_size, n = parse_varint(page_data, ptr)
-            rowid, m = parse_varint(page_data, ptr + n)
-            header_size, h = parse_varint(page_data, ptr + n + m)
-            header_bytes = page_data[ptr + n + m : ptr + n + m + header_size - 1]
-            serial_types = parse_serial_types(header_bytes, col_count)
-            content_start = ptr + n + m + header_size - 1
-            content_bytes = page_data[content_start: content_start + payload_size]
-            row = parse_record_values(content_bytes, serial_types)
-            results.append(dict(zip(schema, row)))
-        except Exception:
+            payload_size, n1 = parse_varint(page, p)
+            _, n2 = parse_varint(page, p+n1)
+            hdr_sz, n3 = parse_varint(page, p+n1+n2)
+            hdr = page[p+n1+n2 : p+n1+n2+n3-1]
+            types = parse_serial_types(hdr, len(schema))
+            content = page[p+n1+n2+n3-1 : p+n1+n2+n3-1+payload_size]
+            vals = parse_record_values(content, types)
+            rows.append(dict(zip(schema, vals)))
+        except:
             continue
-    return results
+    return rows
 
-def recover_deleted_rows(db_path, table_name):
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute(f"PRAGMA table_info('{table_name}')")
-        columns_info = cursor.fetchall()
-        col_names = [col[1] for col in columns_info]
-        conn.close()
 
-        with open(db_path, 'rb') as f:
-            data = f.read()
+def recover_from_freeblocks(db_path, table_name):
+    """Scan every table-leaf page’s freeblocks to recover deleted rows."""
+    conn = sqlite3.connect(db_path)
+    schema = [r[1] for r in conn.execute(f"PRAGMA table_info('{table_name}')")]
+    conn.close()
 
-        page_size = int.from_bytes(data[16:18], 'big')
-        if page_size == 1:
-            page_size = 65536
+    data = open(db_path,'rb').read()
+    page_size = int.from_bytes(data[16:18],'big') or 65536
+    total_pages = len(data) // page_size
+    recovered = []
 
-        first_trunk = int.from_bytes(data[32:36], 'big')
-        if first_trunk == 0:
-            return []
+    for pg in range(1, total_pages+1):
+        off = pg * page_size
+        page = data[off:off+page_size]
+        if not page or page[0] != 0x0D:
+            continue
 
-        visited = set()
-        current_page = first_trunk
-        recovered_rows = []
+        fb = int.from_bytes(page[1:3],'big')
+        while fb:
+            
+            nxt = int.from_bytes(page[fb:fb+2],'big')
+            sz  = int.from_bytes(page[fb+2:fb+4],'big')
+            blob = page[fb+4 : fb+4+(sz-4)]
+            try:
+                
+                payload, n1 = parse_varint(blob, 0)
+                _, n2    = parse_varint(blob, n1)
+                hdr_sz, n3 = parse_varint(blob, n1+n2)
+                hdr = blob[n1+n2 : n1+n2+n3-1]
+                types = parse_serial_types(hdr, len(schema))
+                cont = blob[n1+n2+n3-1 : n1+n2+n3-1+payload]
+                vals = parse_record_values(cont, types)
+                recovered.append(dict(zip(schema, vals)))
+            except:
+                pass
+            fb = nxt
 
-        while current_page != 0 and current_page not in visited:
-            visited.add(current_page)
-            offset = current_page * page_size
-            if offset >= len(data):
-                break
-
-            page = data[offset:offset + page_size]
-            next_trunk = int.from_bytes(page[0:4], 'big')
-            leaf_count = int.from_bytes(page[4:8], 'big')
-
-            leaf_ptrs = []
-            for i in range(leaf_count):
-                start = 8 + (i * 4)
-                ptr = int.from_bytes(page[start:start+4], 'big')
-                if ptr not in visited:
-                    leaf_ptrs.append(ptr)
-
-            for leaf_page in leaf_ptrs:
-                off = leaf_page * page_size
-                if off + page_size > len(data):
-                    continue
-                page_data = data[off:off + page_size]
-                page_type = page_data[0]
-                if page_type == 0x0D:
-                    rows = parse_leaf_page(page_data, col_names)
-                    recovered_rows.extend(rows)
-
-            current_page = next_trunk
-
-        return recovered_rows
-
-    except Exception as e:
-        print(f"[❌] Structured deleted recovery failed: {e}")
-        return []
+    return recovered
